@@ -10,7 +10,7 @@ Visit our [Meetup page](http://www.meetup.com/Python-Toronto/) for details on ou
 
 # Archive Contents
 
-The archive is organized chronologically by date of presentation.  The [Archive Wiki] has details about each event as well as
+The archive is organized chronologically by date of presentation.  The [Archive Wiki](https://github.com/PythonToronto/archive/wiki) has details about each event as well as
 links to to content that could not be archived.
 
 ## Have Past Content?
