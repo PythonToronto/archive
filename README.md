@@ -8,6 +8,8 @@ project to talks on libraries and infrastructure.
 
 Visit our [Meetup page](http://www.meetup.com/Python-Toronto/) for details on our next event or to sign-up to be notified.
 
+Or visit our [Slack Channel](http://python-toronto-slack.herokuapp.com/) and join the conversation.
+
 # Archive Contents
 
 The archive is organized chronologically by date of presentation.  The [Archive Wiki](https://github.com/PythonToronto/archive/wiki) has details about each event as well as
