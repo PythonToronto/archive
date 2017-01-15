@@ -1,0 +1,249 @@
+Postgres, MVCC and You (or, why COUNT(*) is slow)
+
+David Wolever
+@wolever
+
+Preview of my HelloCon talk (… pending acceptance)
+
+Check it out:
+- http://hellocon.net/
+- Feb 25, 26
+- At U of T
+
+Why *is* COUNT(*) so slow?
+
+>  The reason why this is slow is related to the MVCC implementation in
+>  PostgreSQL. The fact that multiple transactions can see different states of
+>  the data means that there can be no straightforward way for "COUNT(*)" to
+>  summarize data across the whole table; PostgreSQL must walk through all rows,
+>  in some sense
+- https://wiki.postgresql.org/wiki/Slow_Counting
+
+But that's… not very helpful
+
+After all, the database is just a big tree structure… surely each node in the
+tree can just store a count of the number of leaves, right?
+
+
+Turns out: no, on both counts.
+
+
+
+
+First, Postgres doesn't store rows in a tree (indexes do use trees, though).
+
+
+
+Each table is made up of a bunch of *pages*, and each page stores a collection
+of rows
+
+(cut to: http://rachbelaid.com/assets/posts/heap_file_page.png )
+
+
+    > select ctid, name, rating from whiskey where name like '%Laddie Ten%';
+       ctid   |               name               | rating
+    ----------+----------------------------------+--------
+     (136,26) | Bruichladdich The Laddie Ten     |     91
+     (136,27) | Bruichladdich The Laddie Ten     |     85
+    ...
+
+
+
+
+
+
+
+
+
+
+
+
+
+Second, the number of active rows in a page "depends".
+
+
+
+This is because MVCC.
+
+
+What is MVCC?
+
+MVCC = Multi-Version Concurrency Control
+
+
+    > BEGIN;
+    > DELETE FROM users;
+    > ROLLBACK;
+
+
+Also facilitates, as the name implies, multiple viewers:
+- Other transactions will be able to see deleted rows until the transaction is
+  COMMITed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+How does this work?
+
+
+Each transaction is assigned a Transaction ID called an XID
+
+
+    > SELECT txid_current();
+     txid_current 
+    --------------
+          1831787
+
+    > SELECT txid_current();
+     txid_current 
+    --------------
+          1831788
+
+And each row (or "tuple", if we're being fancy) has two "hidden" columns: xmin and xmax:
+
+    > SELECT xmin, xmax, name, rating FROM whiskey WHERE name LIKE '%Laddie Ten%';
+      xmin  |  xmax   |               name               | rating
+    --------+---------+----------------------------------+--------
+     122406 |       0 | Bruichladdich The Laddie Ten     |     91
+     122406 | 1831785 | Bruichladdich The Laddie Ten     |     85
+    ...
+
+
+- xmin: transaction ID which created the row
+- xmax: transaction ID which deleted (or updated) the row
+
+
+For example, an INSERT:
+
+    > BEGIN;
+    > SELECT txid_current();
+    1234;
+
+    > INSERT INTO whiskey VALUES ('Bruich Laddie The Laddie Ten', 99);
+    > SELECT xmin, xmax, name, rating FROM whiskey WHERE name LIKE '%Laddie Ten%' LIMIT 1;
+      xmin |  xmax |               name               | rating
+    -------+-------+----------------------------------+--------
+      1234 |     0 | Bruichladdich The Laddie Ten     |     99
+
+    > COMMIT;
+
+
+And an UPDATE:
+
+    > BEGIN;
+    > SELECT txid_current();
+    1235;
+
+    > UPDATE whiskey SET rating = 100 WHERE rating = 99;
+    > SELECT xmin, xmax, name, rating FROM whiskey WHERE name LIKE '%Laddie Ten%' LIMIT 1;
+      xmin |  xmax |               name               | rating
+    -------+-------+----------------------------------+--------
+      1235 |     0 | Bruichladdich The Laddie Ten     |    100
+
+    > ROLLBACK;
+    > SELECT xmin, xmax, name, rating FROM whiskey WHERE name LIKE '%Laddie Ten%' LIMIT 1;
+      xmin |  xmax |               name               | rating
+    -------+-------+----------------------------------+--------
+      1234 |  1235 | Bruichladdich The Laddie Ten     |     99
+
+And if we could look into the database page, we'd see this tuple:
+
+      xmin |  xmax |               name               | rating
+    -------+-------+----------------------------------+--------
+      1235 |  1235 | Bruichladdich The Laddie Ten     |    100
+
+
+
+
+
+
+- To be visible to a transaction, a tuple must have:
+    - An xmin smaller than their xid
+    - An xmax greater than their xid
+    - An xid that's flagged as aborted (see: pg_clog)
+
+
+
+
+
+What happens if two transactions try to delete a row?
+
+
+
+
+
+
+
+And there you go! That answers all your questions, right?
+
+
+
+
+
+…
+
+
+
+
+
+A big question: transaction IDs are a 32 bit unsigned int. What happens when
+they roll over?
+
+Postgres tracks the smallest transaction ID that's referenced by any tuple
+(alive or dead), and if the distance between that and the largest transaction
+ID gets too small:
+
+    WARNING:  database "whiskey" must be vacuumed within 177009986 transactions
+    HINT:  To avoid a database shutdown, execute a database-wide VACUUM in "whiskey".
+
+
+And then when it gets really small (within 1m transactions):
+
+    ERROR:  database is not accepting commands to avoid wraparound data loss in database "whiskey"
+    HINT:  Stop the postmaster and use a standalone backend to VACUUM in "whiskey".
+
+
+
+
+What do we do (… apart from cry)?
+
+
+    > VACUUM whiskey;
+
+
+- Removes dead tuples from pages
+- Resets xmax for aborted transactions
+- Updates the global "lowest referenced transaction ID"
+
+    > SELECT xmin, xmax, name, rating FROM whiskey WHERE name LIKE '%Laddie Ten%' LIMIT 1;
+      xmin |  xmax |               name               | rating
+    -------+-------+----------------------------------+--------
+      1234 |     0 | Bruichladdich The Laddie Ten     |     99
+
+
+
+
+
+And this is why COUNT(*) is slow!
+
+
+
+
+
+References:
+- Postgres Internals Presentations: http://momjian.us/main/presentations/internals.html
+    - Especially: http://momjian.us/main/writings/pgsql/mvcc.pdf
+- Introduction to Postgres' Physical Storage: http://rachbelaid.com/introduction-to-postgres-physical-storage/
+- Transaction ID wraparound: https://blog.sentry.io/2015/07/23/transaction-id-wraparound-in-postgres.html
